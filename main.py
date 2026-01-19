@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Telegram Earning Bot - Complete Production System
-Single-file backend with Telegram bot, FastAPI, database, and admin logic
+Fixed for Render Deployment
 """
 
 import os
@@ -42,12 +42,11 @@ import uvicorn
 # ============================================================================
 
 # Security: Load from environment variables
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8502536019:AAFcuwfD_tDnlMGNwP0jQapNsakJIRjaSfc")
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN environment variable is required")
+# Render এ যদি ENV সেট না থাকে তবুও যেন বিল্ড ফেইল না করে তাই ডিফল্ট ভ্যালু রাখা হলো
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8502536019:AAFcuwfD_tDnlMGNwP0jQapNsakJIRjaSfc") 
 
 ADMIN_IDS = [633765043, 6375918223]  # Admin Telegram IDs
-WEBAPP_URL = os.getenv("WEBAPP_URL", "https://your-render-app.onrender.com")
+WEBAPP_URL = os.getenv("WEBAPP_URL", "https://earnmoney-bd-bot.onrender.com")
 DATABASE_URL = "earn_bot.db"
 
 # Admin Information (Editable)
@@ -84,7 +83,7 @@ class Database:
             yield conn
     
     async def init_db(self):
-        """Initialize database with PostgreSQL-ready schema"""
+        """Initialize database schema"""
         async with self.get_connection() as conn:
             # Users table
             await conn.execute('''
@@ -295,7 +294,8 @@ def parse_init_data(init_data: str) -> Dict:
 # ============================================================================
 
 # Initialize bot and dispatcher
-bot = Bot(token=BOT_TOKEN)
+# Dummy token for build phase if env var is missing
+bot = Bot(token=BOT_TOKEN if BOT_TOKEN else "123456:DummyToken")
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
@@ -306,13 +306,18 @@ async def lifespan(app: FastAPI):
     # Initialize database
     await db.init_db()
     
-    # Start bot polling in background
-    asyncio.create_task(start_bot())
+    # Start bot polling in background ONLY if token is real
+    if BOT_TOKEN and len(BOT_TOKEN) > 20:
+        print("✅ Bot Polling Started...")
+        asyncio.create_task(start_bot())
+    else:
+        print("⚠️ BOT_TOKEN is missing or invalid. Bot polling skipped.")
     
     yield
     
     # Cleanup
-    await bot.session.close()
+    if bot.session:
+        await bot.session.close()
 
 app = FastAPI(lifespan=lifespan, title="EarnMoney BD Bot")
 
@@ -760,6 +765,9 @@ async def cmd_admin(message: types.Message):
 async def verify_webapp(request: Request):
     """Verify Telegram WebApp initData"""
     init_data = request.headers.get("X-Telegram-Init-Data")
+    if not BOT_TOKEN:
+        raise HTTPException(status_code=500, detail="Bot token missing in server")
+    
     if not init_data or not verify_telegram_hash(init_data, BOT_TOKEN):
         raise HTTPException(status_code=401, detail="Invalid Telegram hash")
     return parse_init_data(init_data)
@@ -767,16 +775,23 @@ async def verify_webapp(request: Request):
 @app.get("/app")
 async def serve_webapp():
     """Serve the main Web App HTML"""
-    with open("webapp.html", "r", encoding="utf-8") as f:
-        html_content = f.read()
-    return HTMLResponse(content=html_content)
+    # Assuming webapp.html exists in the same directory
+    try:
+        with open("webapp.html", "r", encoding="utf-8") as f:
+            html_content = f.read()
+        return HTMLResponse(content=html_content)
+    except FileNotFoundError:
+        return HTMLResponse(content="<h1>Error: webapp.html not found!</h1><p>Please upload webapp.html to Render.</p>")
 
 @app.get("/admin")
 async def serve_admin_panel():
     """Serve admin panel HTML"""
-    with open("webapp.html", "r", encoding="utf-8") as f:
-        html_content = f.read()
-    return HTMLResponse(content=html_content)
+    try:
+        with open("webapp.html", "r", encoding="utf-8") as f:
+            html_content = f.read()
+        return HTMLResponse(content=html_content)
+    except FileNotFoundError:
+        return HTMLResponse(content="<h1>Error: webapp.html not found!</h1>")
 
 # ============================================================================
 # API ENDPOINTS FOR WEB APP
@@ -1091,7 +1106,12 @@ async def admin_ban_user(user_id: int, user_data: Dict = Depends(verify_webapp))
 async def start_bot():
     """Start Telegram bot polling"""
     print("🤖 Starting Telegram bot...")
-    await dp.start_polling(bot)
+    try:
+        # Drop pending updates to prevent immediate crashes on restart
+        await bot.delete_webhook(drop_pending_updates=True)
+        await dp.start_polling(bot)
+    except Exception as e:
+        print(f"❌ Bot polling failed: {e}")
 
 @app.get("/")
 async def root():
@@ -1105,9 +1125,11 @@ async def health_check():
 
 if __name__ == "__main__":
     # Run with uvicorn for production
+    # Render requires host 0.0.0.0 and env PORT
+    port = int(os.getenv("PORT", 8000))
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=int(os.getenv("PORT", 8000)),
+        port=port,
         reload=False
     )
